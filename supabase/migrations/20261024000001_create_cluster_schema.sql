@@ -535,8 +535,18 @@ END;
 $$;
 
 -- ==============================================================================
--- ROW LEVEL SECURITY (RLS) POLICIES
+-- TABLE GRANTS & ROW LEVEL SECURITY (RLS) POLICIES
 -- ==============================================================================
+
+-- Grant table access to standard PostgREST roles (RLS enforces row-level isolation)
+GRANT USAGE ON SCHEMA public TO anon, authenticated, service_role;
+GRANT ALL ON TABLE public.sessions TO anon, authenticated, service_role;
+GRANT ALL ON TABLE public.teams TO anon, authenticated, service_role;
+GRANT ALL ON TABLE public.participants TO anon, authenticated, service_role;
+
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO anon, authenticated, service_role;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON SEQUENCES TO anon, authenticated, service_role;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON ROUTINES TO anon, authenticated, service_role;
 
 ALTER TABLE public.sessions ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.teams ENABLE ROW LEVEL SECURITY;
