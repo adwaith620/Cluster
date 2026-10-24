@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { createServerSupabaseClient } from '@/lib/supabase/server';
+import { createServerClient } from '@supabase/ssr';
 
 export async function GET(request: NextRequest) {
   const requestUrl = new URL(request.url);
@@ -8,8 +8,12 @@ export async function GET(request: NextRequest) {
   const errorDescription = requestUrl.searchParams.get('error_description');
   const next = requestUrl.searchParams.get('next') || '/dashboard';
 
-  // Sanitize redirect URL to prevent open redirect vulnerabilities
+  // Sanitize next parameter to prevent open redirects
   const safeNext = next.startsWith('/') && !next.startsWith('//') ? next : '/dashboard';
+
+  // Handle x-forwarded-host from reverse proxies (Vercel)
+  const forwardedHost = request.headers.get('x-forwarded-host');
+  const origin = forwardedHost ? `https://${forwardedHost}` : requestUrl.origin;
 
   // Handle OAuth provider cancellation or denial
   if (oauthError) {
@@ -18,27 +22,48 @@ export async function GET(request: NextRequest) {
         ? 'Google sign-in was canceled.'
         : errorDescription || oauthError;
     return NextResponse.redirect(
-      new URL(`/login?error=${encodeURIComponent(errorMsg)}`, requestUrl.origin)
+      new URL(`/login?error=${encodeURIComponent(errorMsg)}`, origin)
     );
   }
 
   if (code) {
-    const supabase = await createServerSupabaseClient();
+    const redirectUrl = new URL(safeNext, origin);
+    const response = NextResponse.redirect(redirectUrl);
+
+    // Create SSR client directly bound to response.cookies to guarantee Set-Cookie headers on redirect
+    const supabase = createServerClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL || '',
+      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '',
+      {
+        cookies: {
+          getAll() {
+            return request.cookies.getAll();
+          },
+          setAll(cookiesToSet: { name: string; value: string; options?: any }[]) {
+            cookiesToSet.forEach(({ name, value, options }) => {
+              response.cookies.set(name, value, options);
+            });
+          },
+        },
+      }
+    );
+
     const { error } = await supabase.auth.exchangeCodeForSession(code);
 
     if (error) {
       console.error('OAuth code exchange error:', error.message);
       return NextResponse.redirect(
         new URL(
-          `/login?error=${encodeURIComponent('Failed to authenticate with Google. Please try again.')}`,
-          requestUrl.origin
+          `/login?error=${encodeURIComponent('Failed to authenticate with Google: ' + error.message)}`,
+          origin
         )
       );
     }
 
-    return NextResponse.redirect(new URL(safeNext, requestUrl.origin));
+    // Return redirect response with auth session cookies attached
+    return response;
   }
 
   // If accessed without a code or error, return to login
-  return NextResponse.redirect(new URL('/login', requestUrl.origin));
+  return NextResponse.redirect(new URL('/login', origin));
 }

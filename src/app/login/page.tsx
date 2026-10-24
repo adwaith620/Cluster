@@ -62,7 +62,7 @@ function LoginFormContent() {
           : process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000';
       const redirectTo = `${origin}/auth/callback`;
 
-      const { error } = await supabase.auth.signInWithOAuth({
+      const { data, error } = await supabase.auth.signInWithOAuth({
         provider: 'google',
         options: {
           redirectTo,
@@ -76,6 +76,12 @@ function LoginFormContent() {
       if (error) {
         setErrorMsg(error.message);
         setGoogleLoading(false);
+        return;
+      }
+
+      // Explicitly navigate to the provider URL if returned
+      if (data?.url) {
+        window.location.assign(data.url);
       }
     } catch (err: any) {
       setErrorMsg(err.message || 'Failed to initiate Google sign-in.');
