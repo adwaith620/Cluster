@@ -5,15 +5,26 @@ import QRCode from 'qrcode';
  * In production, validates that NEXT_PUBLIC_APP_URL is set to a valid public HTTPS URL.
  */
 export function getCanonicalAppUrl(): string {
-  const envUrl = process.env.NEXT_PUBLIC_APP_URL;
+  const envUrl = process.env.NEXT_PUBLIC_APP_URL?.trim().replace(/\/+$/, '');
 
-  if (envUrl && envUrl.trim() !== '') {
-    return envUrl.trim().replace(/\/+$/, '');
+  // In the browser, window.location.origin gives the actual loaded domain
+  if (typeof window !== 'undefined' && window.location?.origin) {
+    const origin = window.location.origin.replace(/\/+$/, '');
+    // If envUrl is unset or points to localhost while browser is on a public HTTPS domain,
+    // automatically prefer the actual public domain to guarantee reachable QR codes.
+    if (!envUrl || envUrl.includes('localhost') || envUrl.includes('127.0.0.1')) {
+      if (origin.startsWith('https://') || !origin.includes('localhost')) {
+        return origin;
+      }
+    }
   }
 
-  // If in browser, use window.location.origin
+  if (envUrl && envUrl !== '') {
+    return envUrl;
+  }
+
   if (typeof window !== 'undefined' && window.location?.origin) {
-    return window.location.origin;
+    return window.location.origin.replace(/\/+$/, '');
   }
 
   // Development fallback only

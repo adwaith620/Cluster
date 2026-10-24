@@ -256,6 +256,18 @@ export default function ParticipantJoinPage() {
     };
   }, [isRegistered, participantId, deviceToken, sendHeartbeat]);
 
+  // Fast-polling fallback when session is locked or assigned to guarantee instant transition on reveal
+  useEffect(() => {
+    if (!isRegistered || !participantId || !deviceToken) return;
+    if (sessionStatus !== 'assigned' && sessionStatus !== 'registration_locked') return;
+
+    const fastPoll = setInterval(() => {
+      sendHeartbeat(participantId, deviceToken);
+    }, 3500);
+
+    return () => clearInterval(fastPoll);
+  }, [isRegistered, participantId, deviceToken, sessionStatus, sendHeartbeat]);
+
   // Handle Participant Registration Form Submit
   const handleRegister = async (e: React.FormEvent) => {
     e.preventDefault();
