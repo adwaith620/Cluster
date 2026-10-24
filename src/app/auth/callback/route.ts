@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createServerClient } from '@supabase/ssr';
+import { normalizeSupabaseUrl } from '@/lib/supabase/client';
 
 export async function GET(request: NextRequest) {
   const requestUrl = new URL(request.url);
@@ -26,14 +27,27 @@ export async function GET(request: NextRequest) {
     );
   }
 
+  const rawUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || '';
+  const supabaseUrl = normalizeSupabaseUrl(rawUrl);
+  const supabaseAnonKey = (process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '').trim();
+
+  if (!supabaseUrl || !supabaseAnonKey || supabaseUrl.includes('placeholder')) {
+    return NextResponse.redirect(
+      new URL(
+        `/login?error=${encodeURIComponent('Configuration Error: Supabase environment variables are missing on the deployment server.')}`,
+        origin
+      )
+    );
+  }
+
   if (code) {
     const redirectUrl = new URL(safeNext, origin);
     const response = NextResponse.redirect(redirectUrl);
 
     // Create SSR client directly bound to response.cookies to guarantee Set-Cookie headers on redirect
     const supabase = createServerClient(
-      process.env.NEXT_PUBLIC_SUPABASE_URL || '',
-      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '',
+      supabaseUrl,
+      supabaseAnonKey,
       {
         cookies: {
           getAll() {

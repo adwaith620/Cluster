@@ -4,7 +4,7 @@ import React, { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { ClusterLogo } from '@/components/brand/ClusterLogo';
-import { createClient } from '@/lib/supabase/client';
+import { createClient, getSupabaseConfig } from '@/lib/supabase/client';
 import { Session } from '@/types/database';
 import {
   Plus,
@@ -33,6 +33,11 @@ export default function DashboardPage() {
   const [filter, setFilter] = useState<'all' | 'active' | 'completed' | 'archived'>('all');
 
   useEffect(() => {
+    if (!getSupabaseConfig().isConfigured) {
+      router.push('/login');
+      return;
+    }
+
     const supabase = createClient();
 
     const checkAuthAndFetch = async () => {

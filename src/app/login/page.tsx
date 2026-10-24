@@ -4,7 +4,7 @@ import React, { useState, useEffect, Suspense } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import { ClusterLogo } from '@/components/brand/ClusterLogo';
-import { createClient } from '@/lib/supabase/client';
+import { createClient, getSupabaseConfig } from '@/lib/supabase/client';
 import { Mail, Lock, ArrowRight, Loader2, AlertCircle } from 'lucide-react';
 
 function GoogleIcon({ className = 'w-4 h-4' }: { className?: string }) {
@@ -51,8 +51,18 @@ function LoginFormContent() {
     }
   }, [searchParams]);
 
+  const supabaseConfig = getSupabaseConfig();
+
   const handleGoogleSignIn = async () => {
     setErrorMsg(null);
+
+    if (!supabaseConfig.isConfigured) {
+      setErrorMsg(
+        'Configuration Error: NEXT_PUBLIC_SUPABASE_URL or NEXT_PUBLIC_SUPABASE_ANON_KEY is missing on this deployment. Please configure them in your Vercel Project Settings and trigger a redeploy.'
+      );
+      return;
+    }
+
     setGoogleLoading(true);
     try {
       const supabase = createClient();
@@ -93,6 +103,14 @@ function LoginFormContent() {
     e.preventDefault();
     setErrorMsg(null);
     setSuccessMsg(null);
+
+    if (!supabaseConfig.isConfigured) {
+      setErrorMsg(
+        'Configuration Error: Supabase credentials are missing on this deployment. Please configure them in your Vercel Project Settings and trigger a redeploy.'
+      );
+      return;
+    }
+
     setLoading(true);
 
     try {
@@ -148,6 +166,21 @@ function LoginFormContent() {
             : 'Access your active sessions and manage participants'}
         </p>
       </div>
+
+      {!supabaseConfig.isConfigured && (
+        <div className="mb-6 p-4 rounded-xl bg-amber-950/70 border border-amber-500/60 flex items-start gap-3 text-amber-200 text-sm">
+          <AlertCircle className="w-5 h-5 shrink-0 text-amber-400 mt-0.5" />
+          <div className="space-y-1">
+            <p className="font-semibold text-amber-300">Supabase Configuration Required</p>
+            <p className="text-xs text-amber-200/90 leading-relaxed">
+              Environment variables <code className="px-1.5 py-0.5 bg-black/40 rounded font-mono text-amber-300">NEXT_PUBLIC_SUPABASE_URL</code> or <code className="px-1.5 py-0.5 bg-black/40 rounded font-mono text-amber-300">NEXT_PUBLIC_SUPABASE_ANON_KEY</code> are missing or unconfigured on this deployment.
+            </p>
+            <p className="text-xs text-amber-300/80">
+              Please configure them in your Vercel Project Settings and trigger a redeploy.
+            </p>
+          </div>
+        </div>
+      )}
 
       {errorMsg && (
         <div className="mb-6 p-4 rounded-xl bg-red-950/60 border border-red-500/50 flex items-start gap-3 text-red-200 text-sm">

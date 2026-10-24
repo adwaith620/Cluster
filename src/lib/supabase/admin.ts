@@ -1,13 +1,22 @@
 import { createClient } from '@supabase/supabase-js';
+import { normalizeSupabaseUrl } from './client';
 
 export function createAdminClient() {
-  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || '';
-  const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
+  const rawUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || '';
+  const supabaseUrl = normalizeSupabaseUrl(rawUrl);
+  const serviceRoleKey = (process.env.SUPABASE_SERVICE_ROLE_KEY || '').trim();
 
-  if (!supabaseUrl || !serviceRoleKey) {
+  const isConfigured = Boolean(
+    supabaseUrl &&
+    serviceRoleKey &&
+    !supabaseUrl.includes('placeholder') &&
+    !serviceRoleKey.includes('placeholder')
+  );
+
+  if (!isConfigured) {
     return createClient(
-      supabaseUrl || 'https://placeholder.supabase.co',
-      serviceRoleKey || 'placeholder-service-key',
+      'https://build-stub.supabase.internal',
+      'build-stub-service-key',
       {
         auth: {
           persistSession: false,

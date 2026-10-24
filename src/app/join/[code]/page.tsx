@@ -4,7 +4,7 @@ import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import confetti from 'canvas-confetti';
 import { ClusterLogo } from '@/components/brand/ClusterLogo';
-import { createClient } from '@/lib/supabase/client';
+import { createClient, getSupabaseConfig } from '@/lib/supabase/client';
 import { ParticipantRevealData, SessionStatus } from '@/types/database';
 import {
   Users,
@@ -197,7 +197,7 @@ export default function ParticipantJoinPage() {
 
   // Set up Supabase Realtime channel for live transitions & counts
   useEffect(() => {
-    if (!joinCode) return;
+    if (!joinCode || !getSupabaseConfig().isConfigured) return;
 
     const supabase = createClient();
     const channel = supabase
