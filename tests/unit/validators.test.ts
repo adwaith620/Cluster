@@ -3,6 +3,7 @@ import {
   createSessionSchema,
   joinCodeSchema,
   registerParticipantSchema,
+  updateTeamNameSchema,
   validateMediaFile,
   getMediaTypeFromMime,
   MAX_MEDIA_FILE_SIZE,
@@ -90,6 +91,33 @@ describe('Validation Schemas', () => {
           device_token: 'short',
         }).success
       ).toBe(false);
+    });
+  });
+
+  describe('updateTeamNameSchema', () => {
+    it('accepts valid team names', () => {
+      const res = updateTeamNameSchema.safeParse({ name: 'The Cyber Falcons' });
+      expect(res.success).toBe(true);
+      if (res.success) {
+        expect(res.data.name).toBe('The Cyber Falcons');
+      }
+    });
+
+    it('trims whitespace properly', () => {
+      const res = updateTeamNameSchema.safeParse({ name: '  Team Phoenix  ' });
+      expect(res.success).toBe(true);
+      if (res.success) {
+        expect(res.data.name).toBe('Team Phoenix');
+      }
+    });
+
+    it('rejects empty or whitespace-only names', () => {
+      expect(updateTeamNameSchema.safeParse({ name: '' }).success).toBe(false);
+      expect(updateTeamNameSchema.safeParse({ name: '   ' }).success).toBe(false);
+    });
+
+    it('rejects names exceeding 50 characters', () => {
+      expect(updateTeamNameSchema.safeParse({ name: 'A'.repeat(51) }).success).toBe(false);
     });
   });
 

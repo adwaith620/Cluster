@@ -51,3 +51,33 @@ body {
 .animate-pulse-subtle {
   animation: pulse-subtle 3s cubic-bezier(0.4, 0, 0.6, 1) infinite;
 }
+
+@keyframes fade-in-up {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-fade-in {
+  animation: fade-in-up 0.45s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+.animate-fade-in-delay-1 {
+  animation: fade-in-up 0.45s cubic-bezier(0.16, 1, 0.3, 1) 0.08s forwards;
+  opacity: 0;
+}
+
+.animate-fade-in-delay-2 {
+  animation: fade-in-up 0.45s cubic-bezier(0.16, 1, 0.3, 1) 0.16s forwards;
+  opacity: 0;
+}
+
+.animate-fade-in-delay-3 {
+  animation: fade-in-up 0.45s cubic-bezier(0.16, 1, 0.3, 1) 0.24s forwards;
+  opacity: 0;
+}

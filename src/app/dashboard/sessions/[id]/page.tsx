@@ -3,10 +3,9 @@
 import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
-import Image from 'next/image';
 import { ClusterLogo } from '@/components/brand/ClusterLogo';
-import { createClient } from '@/lib/supabase/client';
-import { Session, Team, Participant, ParticipantStatus } from '@/types/database';
+import { createClient, getSupabaseConfig } from '@/lib/supabase/client';
+import { Session, Team, Participant } from '@/types/database';
 import { getSessionJoinUrl, generateQrDataUrl } from '@/lib/utils/qr';
 import {
   ArrowLeft,
@@ -20,17 +19,16 @@ import {
   Shuffle,
   Eye,
   CheckCircle2,
-  Archive,
   RefreshCw,
   Upload,
   AlertCircle,
   FileSpreadsheet,
   Trash2,
-  Play,
   Volume2,
-  FileText,
   Loader2,
-  Sparkles,
+  Pencil,
+  X,
+  Search,
 } from 'lucide-react';
 
 export default function ManageSessionPage() {
@@ -51,6 +49,16 @@ export default function ManageSessionPage() {
   const [teamCountInput, setTeamCountInput] = useState<number>(4);
   const [uploadingTeamId, setUploadingTeamId] = useState<string | null>(null);
 
+  // Team editing state
+  const [editingTeamId, setEditingTeamId] = useState<string | null>(null);
+  const [editingTeamName, setEditingTeamName] = useState<string>('');
+  const [savingTeamId, setSavingTeamId] = useState<string | null>(null);
+
+  // Participant search and removal state
+  const [participantSearch, setParticipantSearch] = useState<string>('');
+  const [participantToDelete, setParticipantToDelete] = useState<Participant | null>(null);
+  const [removingParticipantId, setRemovingParticipantId] = useState<string | null>(null);
+
   // Dialog states
   const [showRevealModal, setShowRevealModal] = useState(false);
   const [showResetModal, setShowResetModal] = useState(false);
@@ -64,6 +72,9 @@ export default function ManageSessionPage() {
   // Fetch full session data
   const loadSessionData = useCallback(async () => {
     try {
+      const { isConfigured } = getSupabaseConfig();
+      if (!isConfigured) return;
+
       const supabase = createClient();
 
       const { data: sessionData, error: sessionErr } = await supabase
@@ -117,20 +128,38 @@ export default function ManageSessionPage() {
     loadSessionData();
 
     // Supabase Realtime Subscription for live updates
+    const { isConfigured } = getSupabaseConfig();
+    if (!isConfigured) return;
+
     const supabase = createClient();
     const channel = supabase
       .channel(`session-${sessionId}`)
       .on(
         'postgres_changes',
         { event: '*', schema: 'public', table: 'participants', filter: `session_id=eq.${sessionId}` },
-        () => {
+        (payload: any) => {
+          if (payload.eventType === 'INSERT' && payload.new) {
+            setParticipants((prev) => {
+              if (prev.some((p) => p.id === payload.new.id)) return prev;
+              return [...prev, payload.new as Participant];
+            });
+          } else if (payload.eventType === 'UPDATE' && payload.new) {
+            setParticipants((prev) =>
+              prev.map((p) => (p.id === payload.new.id ? (payload.new as Participant) : p))
+            );
+          } else if (payload.eventType === 'DELETE' && payload.old) {
+            setParticipants((prev) => prev.filter((p) => p.id !== payload.old.id));
+          }
           loadSessionData();
         }
       )
       .on(
         'postgres_changes',
         { event: '*', schema: 'public', table: 'sessions', filter: `id=eq.${sessionId}` },
-        () => {
+        (payload: any) => {
+          if (payload.new) {
+            setSession(payload.new as Session);
+          }
           loadSessionData();
         }
       )
@@ -143,7 +172,13 @@ export default function ManageSessionPage() {
       )
       .subscribe();
 
+    // Polling fallback to guarantee live updates regardless of network condition
+    const pollInterval = setInterval(() => {
+      loadSessionData();
+    }, 5000);
+
     return () => {
+      clearInterval(pollInterval);
       supabase.removeChannel(channel);
     };
   }, [sessionId, loadSessionData]);
@@ -236,6 +271,76 @@ export default function ManageSessionPage() {
     }
   };
 
+  // Edit Team Name
+  const handleStartEditTeam = (team: Team) => {
+    setEditingTeamId(team.id);
+    setEditingTeamName(team.name || `Team ${team.team_number}`);
+  };
+
+  const handleCancelEditTeam = () => {
+    setEditingTeamId(null);
+    setEditingTeamName('');
+  };
+
+  const handleSaveTeamName = async (teamId: string) => {
+    const trimmed = editingTeamName.trim();
+    if (!trimmed) return;
+
+    setSavingTeamId(teamId);
+    setErrorMsg(null);
+
+    const prevTeams = [...teams];
+    setTeams((prev) =>
+      prev.map((t) => (t.id === teamId ? { ...t, name: trimmed } : t))
+    );
+
+    try {
+      const res = await fetch(`/api/sessions/${sessionId}/teams/${teamId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: trimmed }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to update team name');
+
+      setEditingTeamId(null);
+      setEditingTeamName('');
+    } catch (err: any) {
+      setTeams(prevTeams);
+      setErrorMsg(err.message || 'Failed to update team name');
+    } finally {
+      setSavingTeamId(null);
+    }
+  };
+
+  // Remove Participant
+  const handleRemoveParticipant = async (participantId: string) => {
+    setRemovingParticipantId(participantId);
+    setErrorMsg(null);
+
+    const prevParticipants = [...participants];
+    // Optimistic removal
+    setParticipants((prev) => prev.filter((p) => p.id !== participantId));
+
+    try {
+      const res = await fetch(
+        `/api/sessions/${sessionId}/participants/${participantId}`,
+        {
+          method: 'DELETE',
+        }
+      );
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to remove participant');
+      setParticipantToDelete(null);
+      await loadSessionData();
+    } catch (err: any) {
+      setParticipants(prevParticipants);
+      setErrorMsg(err.message || 'Failed to remove participant');
+    } finally {
+      setRemovingParticipantId(null);
+    }
+  };
+
   // Media file upload per team
   const handleMediaUpload = async (teamId: string, file: File) => {
     setUploadingTeamId(teamId);
@@ -306,6 +411,12 @@ export default function ManageSessionPage() {
   // Check if all teams have media
   const allTeamsHaveMedia = teams.length >= 2 && teams.every((t) => !!t.media_url);
 
+  // Filter participants by search query
+  const filteredParticipants = participants.filter((p) => {
+    if (!participantSearch.trim()) return true;
+    return p.name.toLowerCase().includes(participantSearch.toLowerCase().trim());
+  });
+
   if (loading) {
     return (
       <div className="flex-1 flex flex-col items-center justify-center py-20 text-slate-400">
@@ -341,7 +452,7 @@ export default function ManageSessionPage() {
           <div className="flex items-center gap-3">
             <Link
               href="/dashboard"
-              className="text-slate-400 hover:text-white transition-colors"
+              className="text-slate-400 hover:text-white transition-colors p-1 rounded-lg hover:bg-slate-800"
             >
               <ArrowLeft className="w-5 h-5" />
             </Link>
@@ -351,14 +462,14 @@ export default function ManageSessionPage() {
           <div className="flex items-center gap-2">
             <button
               onClick={handleExportCsv}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold text-slate-300 hover:text-white bg-slate-900 border border-slate-800 hover:bg-slate-800 transition-colors"
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold text-slate-300 hover:text-white bg-slate-900 border border-slate-800 hover:bg-slate-800 transition-colors cursor-pointer"
             >
               <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-400" />
               <span className="hidden sm:inline">Export</span> CSV
             </button>
             <button
               onClick={() => setShowResetModal(true)}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold text-amber-300 hover:text-amber-200 bg-amber-950/40 border border-amber-800/60 hover:bg-amber-900/60 transition-colors"
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold text-amber-300 hover:text-amber-200 bg-amber-950/40 border border-amber-800/60 hover:bg-amber-900/60 transition-colors cursor-pointer"
             >
               <RefreshCw className="w-3.5 h-3.5" />
               <span>Reset</span>
@@ -378,7 +489,7 @@ export default function ManageSessionPage() {
             </div>
             <button
               onClick={() => setErrorMsg(null)}
-              className="text-red-400 hover:text-red-200 text-xs font-semibold"
+              className="text-red-400 hover:text-red-200 text-xs font-semibold cursor-pointer"
             >
               Dismiss
             </button>
@@ -459,19 +570,19 @@ export default function ManageSessionPage() {
           </div>
         </div>
 
-        {/* Top Grid: QR Code & Live Participant Metrics */}
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-8 mb-8">
-          {/* Universal QR Code Card */}
-          <div className="rounded-2xl border border-slate-800 bg-slate-900/50 p-6 flex flex-col justify-between">
+        {/* Top Grid: QR Code & Live Participant Roster (Beside each other) */}
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 mb-8">
+          {/* Universal QR Code Card (5 cols on lg) */}
+          <div className="lg:col-span-5 rounded-2xl border border-slate-800 bg-slate-900/50 p-6 flex flex-col justify-between">
             <div>
               <div className="flex items-center justify-between mb-4">
                 <h2 className="text-base font-bold text-white flex items-center gap-2">
                   <QrCode className="w-4 h-4 text-indigo-400" />
-                  <span>Universal Join QR Code</span>
+                  <span>Session QR Code</span>
                 </h2>
                 <button
                   onClick={handleDownloadQr}
-                  className="text-xs text-indigo-400 hover:text-indigo-300 font-semibold inline-flex items-center gap-1"
+                  className="text-xs text-indigo-400 hover:text-indigo-300 font-semibold inline-flex items-center gap-1 cursor-pointer"
                 >
                   <Download className="w-3.5 h-3.5" />
                   Download
@@ -479,7 +590,7 @@ export default function ManageSessionPage() {
               </div>
 
               {/* QR Code Presentation */}
-              <div className="bg-white p-4 rounded-xl flex items-center justify-center mx-auto max-w-[240px] aspect-square shadow-xl mb-4">
+              <div className="bg-white p-4 rounded-xl flex items-center justify-center mx-auto max-w-[220px] aspect-square shadow-xl mb-4">
                 {qrDataUrl ? (
                   // eslint-disable-next-line @next/next/no-img-element
                   <img
@@ -499,7 +610,7 @@ export default function ManageSessionPage() {
                 </span>
                 <button
                   onClick={handleCopyUrl}
-                  className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white transition-colors shrink-0"
+                  className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white transition-colors shrink-0 cursor-pointer"
                   title="Copy URL"
                 >
                   {copiedUrl ? <Check className="w-4 h-4 text-emerald-400" /> : <Copy className="w-4 h-4" />}
@@ -508,21 +619,22 @@ export default function ManageSessionPage() {
             </div>
 
             <p className="text-[11px] text-slate-500 mt-4 leading-relaxed">
-              Standard HTTPS URL encoding compatible with iPhone Camera, Android Camera, and Google Lens.
+              Participants can scan with built-in camera or Google Lens, or enter join code <strong className="text-slate-300 font-mono">{session.join_code}</strong> manually on the homepage.
             </p>
           </div>
 
-          {/* Live Participant Gauge & Monitoring */}
-          <div className="lg:col-span-2 rounded-2xl border border-slate-800 bg-slate-900/50 p-6 flex flex-col justify-between">
+          {/* Live Participant List Card (7 cols on lg - Displayed beside QR) */}
+          <div className="lg:col-span-7 rounded-2xl border border-slate-800 bg-slate-900/50 p-6 flex flex-col justify-between">
             <div>
               <div className="flex items-center justify-between mb-4 flex-wrap gap-2">
                 <div>
                   <h2 className="text-base font-bold text-white flex items-center gap-2">
                     <Users className="w-4 h-4 text-pink-400" />
-                    <span>Live Participants</span>
+                    <span>Live Participant List</span>
+                    <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse ml-1" title="Realtime active" />
                   </h2>
                   <p className="text-xs text-slate-400 mt-0.5">
-                    Realtime heartbeat tracking with automated lease expiry
+                    Updates automatically via Supabase Realtime when participants join or leave
                   </p>
                 </div>
 
@@ -532,14 +644,14 @@ export default function ManageSessionPage() {
                       onClick={handleCleanInactive}
                       disabled={actionLoading}
                       title="Expire participants with no heartbeat in the last 3 minutes"
-                      className="px-3 py-1.5 rounded-lg text-xs font-medium text-slate-300 hover:text-white bg-slate-800 border border-slate-700 hover:bg-slate-700 transition-colors"
+                      className="px-2.5 py-1.5 rounded-lg text-xs font-medium text-slate-300 hover:text-white bg-slate-800 border border-slate-700 hover:bg-slate-700 transition-colors cursor-pointer"
                     >
                       Clean Inactive
                     </button>
                   )}
-                  <span className="text-2xl font-black text-white">
+                  <span className="text-xl sm:text-2xl font-black text-white">
                     {activeParticipants.length}{' '}
-                    <span className="text-sm font-semibold text-slate-500">
+                    <span className="text-xs font-semibold text-slate-500">
                       / {session.capacity}
                     </span>
                   </span>
@@ -547,9 +659,9 @@ export default function ManageSessionPage() {
               </div>
 
               {/* Capacity Progress Bar */}
-              <div className="w-full bg-slate-950 rounded-full h-3 overflow-hidden border border-slate-800 mb-6">
+              <div className="w-full bg-slate-950 rounded-full h-2.5 overflow-hidden border border-slate-800 mb-4">
                 <div
-                  className="bg-gradient-to-r from-indigo-500 via-pink-500 to-cyan-400 h-3 rounded-full transition-all duration-300"
+                  className="bg-gradient-to-r from-indigo-500 via-pink-500 to-cyan-400 h-2.5 rounded-full transition-all duration-300"
                   style={{
                     width: `${Math.min(
                       100,
@@ -559,41 +671,88 @@ export default function ManageSessionPage() {
                 />
               </div>
 
-              {/* Participant List (Scrollable) */}
-              <div className="max-h-56 overflow-y-auto rounded-xl border border-slate-800/80 bg-slate-950/60 p-3">
+              {/* Search Filter if more than 3 participants */}
+              {participants.length > 3 && (
+                <div className="relative mb-3">
+                  <Search className="w-3.5 h-3.5 text-slate-500 absolute left-3 top-1/2 -translate-y-1/2" />
+                  <input
+                    type="text"
+                    placeholder="Search participants by name..."
+                    value={participantSearch}
+                    onChange={(e) => setParticipantSearch(e.target.value)}
+                    className="w-full pl-9 pr-3 py-1.5 rounded-lg bg-slate-950 border border-slate-800 text-xs text-white placeholder:text-slate-500 focus:outline-none focus:border-indigo-500 transition-colors"
+                  />
+                  {participantSearch && (
+                    <button
+                      onClick={() => setParticipantSearch('')}
+                      className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-500 hover:text-white text-xs"
+                    >
+                      &times;
+                    </button>
+                  )}
+                </div>
+              )}
+
+              {/* Live Participant List (Scrollable) */}
+              <div className="max-h-64 overflow-y-auto rounded-xl border border-slate-800/80 bg-slate-950/60 p-2.5">
                 {participants.length === 0 ? (
                   <div className="py-8 text-center text-slate-500 text-xs">
-                    No participants have scanned and joined yet. Display the QR code to begin.
+                    No participants have joined yet. Project or share the QR code to begin.
+                  </div>
+                ) : filteredParticipants.length === 0 ? (
+                  <div className="py-6 text-center text-slate-500 text-xs">
+                    No participants match &quot;{participantSearch}&quot;.
                   </div>
                 ) : (
-                  <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2">
-                    {participants.map((p) => (
-                      <div
-                        key={p.id}
-                        className={`p-2.5 rounded-lg border text-xs flex items-center justify-between ${
-                          p.status === 'active'
-                            ? 'bg-slate-900 border-slate-800 text-slate-200'
-                            : 'bg-slate-950/40 border-slate-900 text-slate-500 line-through'
-                        }`}
-                      >
-                        <span className="font-medium truncate mr-2">{p.name}</span>
-                        <span
-                          className={`w-2 h-2 rounded-full shrink-0 ${
-                            p.status === 'active' ? 'bg-emerald-400' : 'bg-slate-600'
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                    {filteredParticipants.map((p) => {
+                      const assignedTeam = teams.find((t) => t.id === p.team_id);
+
+                      return (
+                        <div
+                          key={p.id}
+                          className={`p-2 rounded-lg border text-xs flex items-center justify-between gap-2 transition-all ${
+                            p.status === 'active'
+                              ? 'bg-slate-900 border-slate-800 text-slate-200'
+                              : 'bg-slate-950/40 border-slate-900 text-slate-500 line-through'
                           }`}
-                          title={`Status: ${p.status}`}
-                        />
-                      </div>
-                    ))}
+                        >
+                          <div className="flex items-center gap-2 min-w-0">
+                            <span
+                              className={`w-2 h-2 rounded-full shrink-0 ${
+                                p.status === 'active' ? 'bg-emerald-400' : 'bg-slate-600'
+                              }`}
+                              title={`Status: ${p.status}`}
+                            />
+                            <span className="font-medium truncate">{p.name}</span>
+                            {assignedTeam && (
+                              <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-indigo-950 text-indigo-300 border border-indigo-800/50 shrink-0">
+                                {assignedTeam.name || `T${assignedTeam.team_number}`}
+                              </span>
+                            )}
+                          </div>
+
+                          {/* Remove participant button */}
+                          <button
+                            type="button"
+                            onClick={() => setParticipantToDelete(p)}
+                            title={`Remove ${p.name}`}
+                            className="p-1 rounded text-slate-500 hover:text-red-400 hover:bg-red-950/40 transition-colors shrink-0 cursor-pointer"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      );
+                    })}
                   </div>
                 )}
               </div>
             </div>
 
             <div className="mt-4 pt-3 border-t border-slate-800/80 flex items-center justify-between text-xs text-slate-500">
-              <span>{activeParticipants.length} active registrations</span>
+              <span>{activeParticipants.length} active participants</span>
               <span>
-                {session.capacity - activeParticipants.length} remaining capacity slots
+                {session.capacity - activeParticipants.length} available slots
               </span>
             </div>
           </div>
@@ -608,7 +767,7 @@ export default function ManageSessionPage() {
                 <span>Team Formation & Media Management</span>
               </h2>
               <p className="text-sm text-slate-400 mt-1">
-                Upload one media asset per team. Cluster balances participant counts evenly.
+                Upload one media asset per team. Organisers can customize team names below.
               </p>
             </div>
 
@@ -679,10 +838,59 @@ export default function ManageSessionPage() {
                         </span>
                       </div>
 
-                      {/* Team Name Display / Edit */}
-                      <h3 className="text-base font-bold text-white mb-3">
-                        {team.name || `Team ${team.team_number}`}
-                      </h3>
+                      {/* Team Name Display / Inline Edit */}
+                      {editingTeamId === team.id ? (
+                        <div className="flex items-center gap-1.5 mb-3">
+                          <input
+                            type="text"
+                            maxLength={50}
+                            value={editingTeamName}
+                            onChange={(e) => setEditingTeamName(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') handleSaveTeamName(team.id);
+                              if (e.key === 'Escape') handleCancelEditTeam();
+                            }}
+                            autoFocus
+                            placeholder="Enter team name"
+                            className="flex-1 px-2.5 py-1 text-sm font-bold bg-slate-900 border border-indigo-500 rounded-lg text-white focus:outline-none focus:ring-1 focus:ring-indigo-400"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => handleSaveTeamName(team.id)}
+                            disabled={savingTeamId === team.id || !editingTeamName.trim()}
+                            title="Save team name"
+                            className="p-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white disabled:opacity-50 transition-colors cursor-pointer"
+                          >
+                            {savingTeamId === team.id ? (
+                              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                            ) : (
+                              <Check className="w-3.5 h-3.5" />
+                            )}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={handleCancelEditTeam}
+                            title="Cancel"
+                            className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 transition-colors cursor-pointer"
+                          >
+                            <X className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      ) : (
+                        <div className="flex items-center justify-between group mb-3">
+                          <h3 className="text-base font-bold text-white truncate mr-2">
+                            {team.name || `Team ${team.team_number}`}
+                          </h3>
+                          <button
+                            type="button"
+                            onClick={() => handleStartEditTeam(team)}
+                            title="Edit team name"
+                            className="p-1 rounded-md text-slate-400 hover:text-indigo-400 hover:bg-slate-800 transition-colors opacity-75 group-hover:opacity-100 cursor-pointer"
+                          >
+                            <Pencil className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      )}
 
                       {/* Media Preview Box */}
                       <div className="w-full aspect-video rounded-xl bg-slate-900 border border-slate-800 flex items-center justify-center mb-4 overflow-hidden relative">
@@ -763,8 +971,16 @@ export default function ManageSessionPage() {
                         ) : (
                           <ul className="space-y-1 text-xs text-slate-300">
                             {teamMembers.map((m) => (
-                              <li key={m.id} className="truncate">
-                                &bull; {m.name}
+                              <li key={m.id} className="flex items-center justify-between group/m">
+                                <span className="truncate">&bull; {m.name}</span>
+                                <button
+                                  type="button"
+                                  onClick={() => setParticipantToDelete(m)}
+                                  title={`Remove ${m.name}`}
+                                  className="opacity-0 group-hover/m:opacity-100 p-0.5 text-slate-500 hover:text-red-400 transition-opacity cursor-pointer"
+                                >
+                                  <Trash2 className="w-3 h-3" />
+                                </button>
                               </li>
                             ))}
                           </ul>
@@ -779,10 +995,51 @@ export default function ManageSessionPage() {
         </div>
       </main>
 
+      {/* Remove Participant Confirmation Modal */}
+      {participantToDelete && (
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="w-full max-w-sm rounded-2xl bg-slate-900 border border-slate-800 p-6 shadow-2xl animate-fade-in">
+            <div className="w-12 h-12 rounded-xl bg-red-500/10 border border-red-500/20 flex items-center justify-center text-red-400 mb-4">
+              <Trash2 className="w-6 h-6" />
+            </div>
+            <h3 className="text-lg font-bold text-white mb-2">
+              Remove Participant?
+            </h3>
+            <p className="text-sm text-slate-300 mb-6 leading-relaxed">
+              Are you sure you want to remove <strong className="text-white">&quot;{participantToDelete.name}&quot;</strong> from this session? This will immediately free up a capacity slot and remove them from any team assignments.
+            </p>
+            <div className="flex items-center justify-end gap-3">
+              <button
+                type="button"
+                onClick={() => setParticipantToDelete(null)}
+                className="px-4 py-2 rounded-xl border border-slate-700 text-slate-300 hover:bg-slate-800 text-xs font-semibold transition-colors cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => handleRemoveParticipant(participantToDelete.id)}
+                disabled={removingParticipantId === participantToDelete.id}
+                className="px-4 py-2 rounded-xl bg-red-600 hover:bg-red-500 text-white text-xs font-bold transition-all cursor-pointer shadow-lg shadow-red-600/20 flex items-center gap-1.5"
+              >
+                {removingParticipantId === participantToDelete.id ? (
+                  <>
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    <span>Removing...</span>
+                  </>
+                ) : (
+                  <span>Remove Participant</span>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Reveal Confirmation Modal */}
       {showRevealModal && (
         <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="w-full max-w-md rounded-2xl bg-slate-900 border border-slate-800 p-6 shadow-2xl">
+          <div className="w-full max-w-md rounded-2xl bg-slate-900 border border-slate-800 p-6 shadow-2xl animate-fade-in">
             <div className="w-12 h-12 rounded-xl bg-pink-500/10 border border-pink-500/20 flex items-center justify-center text-pink-400 mb-4">
               <Eye className="w-6 h-6" />
             </div>
@@ -816,7 +1073,7 @@ export default function ManageSessionPage() {
       {/* Reset Confirmation Modal */}
       {showResetModal && (
         <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="w-full max-w-md rounded-2xl bg-slate-900 border border-slate-800 p-6 shadow-2xl">
+          <div className="w-full max-w-md rounded-2xl bg-slate-900 border border-slate-800 p-6 shadow-2xl animate-fade-in">
             <div className="w-12 h-12 rounded-xl bg-amber-500/10 border border-amber-500/20 flex items-center justify-center text-amber-400 mb-4">
               <AlertCircle className="w-6 h-6" />
             </div>

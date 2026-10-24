@@ -14,7 +14,6 @@ import {
   AlertTriangle,
   Loader2,
   Volume2,
-  Play,
   ArrowRight,
   ShieldCheck,
   CheckCircle,
@@ -69,6 +68,17 @@ export default function ParticipantJoinPage() {
     }
   }, []);
 
+  // Handle participant removal cleanup
+  const handleParticipantRemoved = useCallback(() => {
+    localStorage.removeItem(`${DEVICE_STORAGE_KEY}_${joinCode}`);
+    localStorage.removeItem(`${PARTICIPANT_ID_STORAGE_KEY}_${joinCode}`);
+    setIsRegistered(false);
+    setParticipantId(null);
+    setParticipantName('');
+    setRevealData(null);
+    setErrorMsg('You have been removed from this session by the organiser.');
+  }, [joinCode]);
+
   // Poll for reveal state once registered
   const fetchRevealState = useCallback(
     async (pId: string, token: string) => {
@@ -108,6 +118,10 @@ export default function ParticipantJoinPage() {
         if (res.ok) {
           const data = await res.json();
           setIsOnline(true);
+          if (data.participant_status === 'cancelled') {
+            handleParticipantRemoved();
+            return;
+          }
           if (data.active_count !== undefined) setActiveCount(data.active_count);
           if (data.session_status) {
             setSessionStatus(data.session_status);
@@ -115,12 +129,17 @@ export default function ParticipantJoinPage() {
               fetchRevealState(pId, token);
             }
           }
+        } else if (res.status === 400 || res.status === 404) {
+          const data = await res.json().catch(() => ({}));
+          if (data.error && data.error.includes('PARTICIPANT_NOT_FOUND')) {
+            handleParticipantRemoved();
+          }
         }
       } catch {
         setIsOnline(false);
       }
     },
-    [joinCode, fetchRevealState]
+    [joinCode, fetchRevealState, handleParticipantRemoved]
   );
 
   // Initial load: check session validity & restore existing participant if present
@@ -129,6 +148,13 @@ export default function ParticipantJoinPage() {
 
     const checkSessionAndAuth = async () => {
       try {
+        const { isConfigured } = getSupabaseConfig();
+        if (!isConfigured) {
+          setErrorMsg('Application is not configured with Supabase credentials.');
+          setLoading(false);
+          return;
+        }
+
         const supabase = createClient();
         const { data: session, error } = await supabase
           .from('sessions')
@@ -170,16 +196,33 @@ export default function ParticipantJoinPage() {
         const storedPid = localStorage.getItem(`${PARTICIPANT_ID_STORAGE_KEY}_${joinCode}`);
 
         if (storedToken && storedPid) {
-          // Attempt automatic resumption
-          setParticipantId(storedPid);
-          setDeviceToken(storedToken);
-          setIsRegistered(true);
+          // Verify with database that participant still exists and is active
+          const { data: pCheck } = await supabase
+            .from('participants')
+            .select('id, name, status')
+            .eq('id', storedPid)
+            .single();
 
-          // Check if already revealed
-          await fetchRevealState(storedPid, storedToken);
+          if (mounted) {
+            if (pCheck && pCheck.status === 'active') {
+              setParticipantId(storedPid);
+              setParticipantName(pCheck.name);
+              setDeviceToken(storedToken);
+              setIsRegistered(true);
+              await fetchRevealState(storedPid, storedToken);
+            } else {
+              localStorage.removeItem(`${DEVICE_STORAGE_KEY}_${joinCode}`);
+              localStorage.removeItem(`${PARTICIPANT_ID_STORAGE_KEY}_${joinCode}`);
+              if (pCheck && pCheck.status === 'cancelled') {
+                setErrorMsg('You were removed from this session by the organiser.');
+              }
+            }
+          }
         }
 
-        setLoading(false);
+        if (mounted) {
+          setLoading(false);
+        }
       } catch (err: any) {
         if (mounted) {
           setErrorMsg(err.message || 'Failed to connect to session.');
@@ -217,7 +260,15 @@ export default function ParticipantJoinPage() {
       .on(
         'postgres_changes',
         { event: '*', schema: 'public', table: 'participants' },
-        () => {
+        (payload: any) => {
+          if (payload.eventType === 'DELETE' && payload.old?.id === participantId) {
+            handleParticipantRemoved();
+            return;
+          }
+          if (payload.eventType === 'UPDATE' && payload.new?.id === participantId && payload.new.status === 'cancelled') {
+            handleParticipantRemoved();
+            return;
+          }
           if (participantId && deviceToken) {
             sendHeartbeat(participantId, deviceToken);
           }
@@ -228,7 +279,7 @@ export default function ParticipantJoinPage() {
     return () => {
       supabase.removeChannel(channel);
     };
-  }, [joinCode, participantId, deviceToken, fetchRevealState, sendHeartbeat]);
+  }, [joinCode, participantId, deviceToken, fetchRevealState, sendHeartbeat, handleParticipantRemoved]);
 
   // Heartbeat interval while registered
   useEffect(() => {
@@ -242,33 +293,14 @@ export default function ParticipantJoinPage() {
       sendHeartbeat(participantId, deviceToken);
     }, 20000);
 
-    // Also send heartbeat when user returns to tab
-    const handleVisibilityChange = () => {
-      if (document.visibilityState === 'visible') {
-        sendHeartbeat(participantId, deviceToken);
-      }
-    };
-    document.addEventListener('visibilitychange', handleVisibilityChange);
-
     return () => {
-      if (heartbeatTimerRef.current) clearInterval(heartbeatTimerRef.current);
-      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      if (heartbeatTimerRef.current) {
+        clearInterval(heartbeatTimerRef.current);
+      }
     };
   }, [isRegistered, participantId, deviceToken, sendHeartbeat]);
 
-  // Fast-polling fallback when session is locked or assigned to guarantee instant transition on reveal
-  useEffect(() => {
-    if (!isRegistered || !participantId || !deviceToken) return;
-    if (sessionStatus !== 'assigned' && sessionStatus !== 'registration_locked') return;
-
-    const fastPoll = setInterval(() => {
-      sendHeartbeat(participantId, deviceToken);
-    }, 3500);
-
-    return () => clearInterval(fastPoll);
-  }, [isRegistered, participantId, deviceToken, sessionStatus, sendHeartbeat]);
-
-  // Handle Participant Registration Form Submit
+  // Submit registration
   const handleRegister = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!nameInput.trim()) return;
@@ -277,24 +309,20 @@ export default function ParticipantJoinPage() {
     setErrorMsg(null);
 
     try {
-      const storedToken =
-        deviceToken ||
-        localStorage.getItem(`${DEVICE_STORAGE_KEY}_${joinCode}`) ||
-        undefined;
-
+      const existingToken = localStorage.getItem(`${DEVICE_STORAGE_KEY}_${joinCode}`);
       const res = await fetch(`/api/sessions/${joinCode}/register`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           name: nameInput.trim(),
-          device_token: storedToken,
+          device_token: existingToken || undefined,
         }),
       });
 
       const data = await res.json();
 
       if (!res.ok) {
-        throw new Error(data.error || 'Registration failed');
+        throw new Error(data.error || 'Failed to register. Please try again.');
       }
 
       setParticipantId(data.participant_id);
@@ -320,7 +348,7 @@ export default function ParticipantJoinPage() {
   // Loading Screen
   if (loading) {
     return (
-      <div className="flex-1 flex flex-col items-center justify-center p-6 text-slate-400">
+      <div className="flex-1 min-h-[100dvh] flex flex-col items-center justify-center p-6 text-slate-400">
         <Loader2 className="w-8 h-8 animate-spin text-indigo-400 mb-3" />
         <p className="text-sm font-medium">Connecting to session...</p>
       </div>
@@ -330,20 +358,28 @@ export default function ParticipantJoinPage() {
   // Error / Invalid Session Screen
   if (errorMsg && !isRegistered) {
     return (
-      <div className="flex-1 flex items-center justify-center p-4">
-        <div className="w-full max-w-sm rounded-2xl bg-slate-900 border border-slate-800 p-6 text-center shadow-2xl">
+      <div className="flex-1 min-h-[100dvh] flex items-center justify-center p-4">
+        <div className="w-full max-w-sm rounded-3xl bg-slate-900 border border-slate-800 p-6 sm:p-8 text-center shadow-2xl animate-fade-in">
           <AlertTriangle className="w-12 h-12 text-amber-400 mx-auto mb-3" />
           <h2 className="text-lg font-bold text-white mb-2">Unable to Join</h2>
-          <p className="text-sm text-slate-400 mb-6 leading-relaxed">{errorMsg}</p>
-          <button
-            onClick={() => {
-              setErrorMsg(null);
-              window.location.reload();
-            }}
-            className="w-full py-2.5 rounded-xl bg-indigo-600 text-white text-sm font-semibold hover:bg-indigo-500 cursor-pointer"
-          >
-            Retry Connection
-          </button>
+          <p className="text-sm text-slate-300 mb-6 leading-relaxed">{errorMsg}</p>
+          <div className="flex flex-col gap-2.5">
+            <button
+              onClick={() => {
+                setErrorMsg(null);
+                window.location.reload();
+              }}
+              className="w-full py-3 rounded-xl bg-indigo-600 text-white text-sm font-semibold hover:bg-indigo-500 cursor-pointer transition-colors"
+            >
+              Retry Connection
+            </button>
+            <button
+              onClick={() => router.push('/')}
+              className="w-full py-2.5 rounded-xl border border-slate-800 text-slate-400 text-xs hover:text-white transition-colors"
+            >
+              Back to Home
+            </button>
+          </div>
         </div>
       </div>
     );
@@ -358,10 +394,18 @@ export default function ParticipantJoinPage() {
     const teamDisplayName = revealData.team_name || `Team ${revealData.team_number}`;
 
     return (
-      <div className="flex-1 flex flex-col items-center justify-center p-4 sm:p-6 bg-gradient-to-b from-[#090d16] via-indigo-950/30 to-[#090d16]">
+      <div className="flex-1 min-h-[100dvh] flex flex-col items-center justify-center p-4 sm:p-6 bg-gradient-to-b from-[#090d16] via-indigo-950/30 to-[#090d16]">
         <div className="w-full max-w-md rounded-3xl border-2 border-indigo-500/40 bg-slate-900/90 backdrop-blur-2xl p-6 sm:p-8 shadow-2xl shadow-indigo-500/10 text-center animate-fade-in">
+          {/* Header with Cluster Logo & Event Title */}
+          <div className="text-center mb-4">
+            <ClusterLogo size="sm" showTagline={false} className="mb-2 mx-auto" />
+            <h2 className="text-sm sm:text-base font-semibold text-slate-300 tracking-tight">
+              {sessionTitle}
+            </h2>
+          </div>
+
           {/* Header Badge */}
-          <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-pink-500/20 text-pink-300 text-xs font-bold uppercase tracking-wider mb-4 border border-pink-500/30">
+          <div className="inline-flex items-center gap-1.5 px-3.5 py-1 rounded-full bg-pink-500/20 text-pink-300 text-xs font-bold uppercase tracking-wider mb-4 border border-pink-500/30">
             <Sparkles className="w-3.5 h-3.5" />
             <span>Identity Revealed</span>
           </div>
@@ -450,14 +494,19 @@ export default function ParticipantJoinPage() {
   // ============================================================================
   if (isRegistered) {
     return (
-      <div className="flex-1 flex flex-col items-center justify-center p-4 sm:p-6">
-        <div className="w-full max-w-md rounded-3xl border border-slate-800 bg-slate-900/80 backdrop-blur-xl p-6 sm:p-8 shadow-2xl">
-          {/* Header */}
+      <div className="flex-1 min-h-[100dvh] flex flex-col items-center justify-center p-4 sm:p-6">
+        <div className="w-full max-w-md rounded-3xl border border-slate-800 bg-slate-900/90 backdrop-blur-2xl p-6 sm:p-8 shadow-2xl animate-fade-in">
+          {/* Header with Cluster Logo & Event Title */}
           <div className="text-center mb-6">
-            <ClusterLogo size="sm" showTagline={false} className="mb-3" />
-            <span className="px-3 py-1 rounded-full text-xs font-semibold uppercase tracking-wider bg-indigo-500/10 text-indigo-400 border border-indigo-500/20">
+            <ClusterLogo size="sm" showTagline={false} className="mb-3 mx-auto" />
+            <h1 className="text-xl sm:text-2xl font-extrabold text-white tracking-tight leading-snug mb-2">
               {sessionTitle}
-            </span>
+            </h1>
+            <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold uppercase tracking-wider bg-indigo-500/10 text-indigo-400 border border-indigo-500/20">
+              <span className="font-mono">{joinCode}</span>
+              <span>&bull;</span>
+              <span>Waiting Room</span>
+            </div>
           </div>
 
           {/* Registered Confirmation Card */}
@@ -509,14 +558,11 @@ export default function ParticipantJoinPage() {
             </span>
           </div>
 
-          {/* REQUIRED WARNING COPY (Exact copy specified in Prompt Section 10) */}
-          <div className="rounded-xl bg-amber-950/40 border border-amber-500/40 p-4 text-xs text-amber-200 leading-relaxed mb-6">
-            <p>
-              ⚠️ Stay on this page until your team is revealed. If you leave the
-              page, close your browser, or remain disconnected for too long, your
-              registration may be cancelled. Keep this page open and return
-              promptly if your connection drops. If your registration is
-              cancelled, you may need to register again.
+          {/* REQUIRED WARNING COPY */}
+          <div className="rounded-2xl bg-amber-950/40 border border-amber-500/40 p-4 text-xs text-amber-200 leading-relaxed mb-6 flex items-start gap-3 shadow-lg">
+            <AlertTriangle className="w-5 h-5 text-amber-400 shrink-0 mt-0.5" />
+            <p className="font-medium text-xs sm:text-sm">
+              You&apos;ll be notified of your Teams soon. Don&apos;t leave this page or Close the Browser.
             </p>
           </div>
 
@@ -546,15 +592,19 @@ export default function ParticipantJoinPage() {
   // PRE-REGISTRATION JOIN SCREEN
   // ============================================================================
   return (
-    <div className="flex-1 flex flex-col items-center justify-center p-4 sm:p-6">
-      <div className="w-full max-w-md rounded-3xl border border-slate-800 bg-slate-900/80 backdrop-blur-xl p-6 sm:p-8 shadow-2xl">
+    <div className="flex-1 min-h-[100dvh] flex flex-col items-center justify-center p-4 sm:p-6">
+      <div className="w-full max-w-md rounded-3xl border border-slate-800 bg-slate-900/90 backdrop-blur-2xl p-6 sm:p-8 shadow-2xl animate-fade-in">
+        {/* Header with Cluster Logo & Event Title */}
         <div className="text-center mb-6">
-          <ClusterLogo size="md" showTagline={false} className="mb-3" />
-          <div className="inline-block px-3 py-1 rounded-full text-xs font-semibold bg-slate-800 text-indigo-400 border border-slate-700 mb-2">
-            Session: {joinCode}
+          <ClusterLogo size="md" showTagline={false} className="mb-3 mx-auto" />
+          <h1 className="text-2xl sm:text-3xl font-extrabold text-white tracking-tight leading-snug mb-2">
+            {sessionTitle}
+          </h1>
+          <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold bg-slate-800 text-indigo-400 border border-slate-700 mb-2">
+            <span>Session Code:</span>
+            <span className="font-mono font-bold tracking-wider">{joinCode}</span>
           </div>
-          <h1 className="text-2xl font-bold text-white mb-1">{sessionTitle}</h1>
-          <p className="text-xs text-slate-400">
+          <p className="text-xs text-slate-400 max-w-xs mx-auto">
             Enter your name to register and join the activity.
           </p>
         </div>
@@ -582,16 +632,16 @@ export default function ParticipantJoinPage() {
 
         {/* Closed or Full Message if not open */}
         {sessionStatus !== 'registration_open' ? (
-          <div className="p-4 rounded-xl bg-amber-950/60 border border-amber-500/50 text-center text-amber-200 text-sm">
-            <Lock className="w-5 h-5 mx-auto mb-2 text-amber-400" />
+          <div className="p-5 rounded-2xl bg-amber-950/60 border border-amber-500/50 text-center text-amber-200 text-sm">
+            <Lock className="w-6 h-6 mx-auto mb-2 text-amber-400" />
             <div className="font-bold mb-1">Registration Closed</div>
             <p className="text-xs text-amber-300">
               The organiser has locked registration for this session.
             </p>
           </div>
         ) : activeCount >= capacity ? (
-          <div className="p-4 rounded-xl bg-amber-950/60 border border-amber-500/50 text-center text-amber-200 text-sm">
-            <Users className="w-5 h-5 mx-auto mb-2 text-amber-400" />
+          <div className="p-5 rounded-2xl bg-amber-950/60 border border-amber-500/50 text-center text-amber-200 text-sm">
+            <Users className="w-6 h-6 mx-auto mb-2 text-amber-400" />
             <div className="font-bold mb-1">Capacity Reached</div>
             <p className="text-xs text-amber-300">
               This session has reached its maximum capacity of {capacity} participants.
@@ -610,7 +660,7 @@ export default function ParticipantJoinPage() {
                 value={nameInput}
                 onChange={(e) => setNameInput(e.target.value)}
                 placeholder="e.g. Jordan Miller"
-                className="w-full px-4 py-3 rounded-xl bg-slate-950 border border-slate-800 text-white placeholder:text-slate-500 text-base focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition-all"
+                className="w-full px-4 py-3.5 rounded-xl bg-slate-950 border border-slate-800 text-white placeholder:text-slate-500 text-base focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition-all"
               />
               <p className="text-[11px] text-slate-500 mt-1">
                 Visible to the organiser during team assignments.
