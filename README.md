@@ -167,7 +167,15 @@ SUPABASE_SERVICE_ROLE_KEY="your-supabase-service-role-key"
    - Storage bucket `team-media` with size limits (50MB) and allowed MIME types.
    - Realtime publication enabling live subscriptions.
 
-### 4. Start Development Server
+### 4. Google OAuth Setup (Optional for Organisers)
+To enable "Continue with Google" for organisers:
+1. In the [Google Cloud Console](https://console.cloud.google.com/apis/credentials), create an **OAuth 2.0 Client ID** (Web application).
+2. Set Authorized redirect URIs to your Supabase Auth callback URL:
+   `https://<your-supabase-project-id>.supabase.co/auth/v1/callback`
+3. In your **Supabase Dashboard > Authentication > Providers > Google**, toggle **Enable Google provider**, paste your **Client ID** and **Client Secret**, and save.
+4. Under **URL Configuration**, add your local redirect (`http://localhost:3000/auth/callback`) and production Vercel domain (`https://<your-app>.vercel.app/auth/callback`) to the **Redirect URLs** list.
+
+### 5. Start Development Server
 ```bash
 npm run dev
 ```

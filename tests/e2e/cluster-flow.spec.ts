@@ -13,13 +13,19 @@ test.describe('Cluster E2E Smoke & Public Flows', () => {
     await expect(page.getByRole('link', { name: /Organiser Sign In/i })).toBeVisible();
   });
 
-  test('Organiser login page displays authentication form and navigation', async ({ page }) => {
+  test('Organiser login page displays authentication form, Google Sign-In, and navigation', async ({ page }) => {
     await page.goto('/login');
 
     await expect(page.getByRole('heading', { name: /Organiser Sign In/i })).toBeVisible();
+    await expect(page.getByRole('button', { name: /Continue with Google/i })).toBeVisible();
     await expect(page.getByLabel(/Email Address/i)).toBeVisible();
     await expect(page.getByLabel(/Password/i)).toBeVisible();
     await expect(page.getByRole('button', { name: /Sign In/i })).toBeVisible();
+
+    // Check mode toggle to Sign up
+    await page.getByRole('button', { name: /Sign up/i }).click();
+    await expect(page.getByRole('heading', { name: /Create Organiser Account/i })).toBeVisible();
+    await expect(page.getByRole('button', { name: /Continue with Google/i })).toBeVisible();
   });
 
   test('Public participant join route handles unknown or invalid session codes gracefully', async ({ page }) => {
