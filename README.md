@@ -171,9 +171,13 @@ SUPABASE_SERVICE_ROLE_KEY="your-supabase-service-role-key"
 To enable "Continue with Google" for organisers:
 1. In the [Google Cloud Console](https://console.cloud.google.com/apis/credentials), create an **OAuth 2.0 Client ID** (Web application).
 2. Set Authorized redirect URIs to your Supabase Auth callback URL:
-   `https://<your-supabase-project-id>.supabase.co/auth/v1/callback`
+   `https://atijpayqntezmnqbprzn.supabase.co/auth/v1/callback`
 3. In your **Supabase Dashboard > Authentication > Providers > Google**, toggle **Enable Google provider**, paste your **Client ID** and **Client Secret**, and save.
-4. Under **URL Configuration**, add your local redirect (`http://localhost:3000/auth/callback`) and production Vercel domain (`https://<your-app>.vercel.app/auth/callback`) to the **Redirect URLs** list.
+4. Under **URL Configuration**:
+   - Set **Site URL** to: `https://cluster-tkm.vercel.app`
+   - Add both URLs to the **Redirect URLs** list:
+     - `https://cluster-tkm.vercel.app/auth/callback`
+     - `http://localhost:3000/auth/callback`
 
 ### 5. Start Development Server
 ```bash
@@ -226,8 +230,8 @@ npm run test:e2e
 1. Push this repository to GitHub: `https://github.com/adwaith620/Cluster.git`.
 2. Import the repository in [Vercel](https://vercel.com).
 3. Set the Environment Variables in the Vercel Project Settings:
-   - `NEXT_PUBLIC_APP_URL`: Your production custom domain (e.g. `https://cluster.yourdomain.com`).
-   - `NEXT_PUBLIC_SUPABASE_URL`: Your Supabase URL.
+   - `NEXT_PUBLIC_APP_URL`: `https://cluster-tkm.vercel.app`
+   - `NEXT_PUBLIC_SUPABASE_URL`: Your Supabase URL (`https://atijpayqntezmnqbprzn.supabase.co`).
    - `NEXT_PUBLIC_SUPABASE_ANON_KEY`: Your Supabase public anon key.
    - `SUPABASE_SERVICE_ROLE_KEY`: Your Supabase service role key (kept strictly secret on server).
 4. Deploy. Vercel automatically runs `next build` and generates the optimized production bundles.
