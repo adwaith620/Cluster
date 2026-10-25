@@ -1,5 +1,6 @@
 import type { Metadata, Viewport } from 'next';
 import './globals.css';
+import SeasonalCanvas from '@/components/effects/SeasonalCanvas';
 
 export const metadata: Metadata = {
   title: 'Cluster — Scan. Discover. Connect. | Realtime Team Formation',
@@ -25,7 +26,8 @@ export default function RootLayout({
   return (
     <html lang="en" className="dark">
       <body className="bg-[#090d16] text-slate-100 antialiased selection:bg-indigo-500 selection:text-white">
-        <div className="min-h-screen flex flex-col">{children}</div>
+        <SeasonalCanvas />
+        <div className="relative z-10 min-h-screen flex flex-col">{children}</div>
       </body>
     </html>
   );
